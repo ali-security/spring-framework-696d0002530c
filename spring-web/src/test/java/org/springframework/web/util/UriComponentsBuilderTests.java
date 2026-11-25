@@ -252,6 +252,63 @@ class UriComponentsBuilderTests {
 				UriComponentsBuilder.fromUriString("http://[1abc:2abc:3abc::5ABC:6abc:8080/resource"));
 	}
 
+	@Test
+	void fromUriStringUnterminatedIPv6Host() {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> UriComponentsBuilder.fromUriString("http://[::1/path"))
+				.withMessage("Invalid IPV6 host in [http://[::1/path]");
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> UriComponentsBuilder.fromUriString("ws://[::1/path"))
+				.withMessage("Invalid IPV6 host in [ws://[::1/path]");
+	}
+
+	@Test
+	void fromUriStringWithSquareBracketBeforeUserInfo() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https://example.com[@evil.com/path").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getUserInfo()).isEqualTo("example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(-1);
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromUriString("https://example.com[@evil.com:8080/path").build();
+		assertThat(result.getUserInfo()).isEqualTo("example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPort()).isEqualTo(8080);
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test
+	void fromUriStringWithMultipleAtSignsInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromUriString("https://user@example.com[@evil.com/path").build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromUriString("https://user@example.com@evil.com/path").build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test
+	void fromUriStringIPv6HostWithUserInfoPortQueryAndFragment() {
+		UriComponents result = UriComponentsBuilder
+				.fromUriString("http://user:pwd@[::1]:8080/foo?q=a@b#frag@x").build();
+		assertThat(result.getUserInfo()).isEqualTo("user:pwd");
+		assertThat(result.getHost()).isEqualTo("[::1]");
+		assertThat(result.getPort()).isEqualTo(8080);
+		assertThat(result.getPath()).isEqualTo("/foo");
+		assertThat(result.getQuery()).isEqualTo("q=a@b");
+		assertThat(result.getFragment()).isEqualTo("frag@x");
+
+		result = UriComponentsBuilder.fromUriString("http://[::1]:8080/foo").build();
+		assertThat(result.getUserInfo()).isNull();
+		assertThat(result.getHost()).isEqualTo("[::1]");
+		assertThat(result.getPort()).isEqualTo(8080);
+		assertThat(result.getPath()).isEqualTo("/foo");
+	}
+
 	@Test  // SPR-11970
 	void fromUriStringNoPathWithReservedCharInQuery() {
 		UriComponents result = UriComponentsBuilder.fromUriString("https://example.com?foo=bar@baz").build();
@@ -279,6 +336,82 @@ class UriComponentsBuilderTests {
 	void fromHttpUrlInvalidIPv6Host() {
 		assertThatIllegalArgumentException().isThrownBy(() ->
 				UriComponentsBuilder.fromHttpUrl("http://[1abc:2abc:3abc::5ABC:6abc:8080/resource"));
+	}
+
+	@Test
+	void fromHttpUrlUnterminatedIPv6Host() {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> UriComponentsBuilder.fromHttpUrl("http://[::1/path"))
+				.withMessage("Invalid IPV6 host in [http://[::1/path]");
+	}
+
+	@Test
+	void fromHttpUrlWithSquareBracketBeforeUserInfo() {
+		UriComponents result = UriComponentsBuilder.fromHttpUrl("https://example.com[@evil.com/path").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getUserInfo()).isEqualTo("example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test
+	void fromHttpUrlWithMultipleAtSignsInAuthority() {
+		UriComponents result = UriComponentsBuilder.fromHttpUrl("https://user@example.com[@evil.com/path").build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com[");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+
+		result = UriComponentsBuilder.fromHttpUrl("https://user@example.com@evil.com/path").build();
+		assertThat(result.getUserInfo()).isEqualTo("user@example.com");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+		assertThat(result.getPath()).isEqualTo("/path");
+	}
+
+	@Test
+	void fromHttpUrlIPv6Host() {
+		UriComponents result = UriComponentsBuilder.fromHttpUrl("http://[::1]:8080/foo").build();
+		assertThat(result.getHost()).isEqualTo("[::1]");
+		assertThat(result.getPort()).isEqualTo(8080);
+		assertThat(result.getPath()).isEqualTo("/foo");
+
+		result = UriComponentsBuilder.fromHttpUrl("http://user@[fe80::1%eth0]:8080/foo").build();
+		assertThat(result.getUserInfo()).isEqualTo("user");
+		assertThat(result.getHost()).isEqualTo("[fe80::1%eth0]");
+		assertThat(result.getPort()).isEqualTo(8080);
+		assertThat(result.getPath()).isEqualTo("/foo");
+	}
+
+	@Test
+	void fromOriginHeader() {
+		UriComponents result = UriComponentsBuilder.fromOriginHeader("https://example.com").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getHost()).isEqualTo("example.com");
+		assertThat(result.getPort()).isEqualTo(-1);
+
+		result = UriComponentsBuilder.fromOriginHeader("http://[::1]:8080").build();
+		assertThat(result.getScheme()).isEqualTo("http");
+		assertThat(result.getHost()).isEqualTo("[::1]");
+		assertThat(result.getPort()).isEqualTo(8080);
+	}
+
+	@Test
+	void fromOriginHeaderWithSquareBracketBeforeUserInfo() {
+		UriComponents result = UriComponentsBuilder.fromOriginHeader("https://example.com[@evil.com").build();
+		assertThat(result.getScheme()).isEqualTo("https");
+		assertThat(result.getHost()).isEqualTo("evil.com");
+
+		result = UriComponentsBuilder.fromOriginHeader("https://user@example.com[@evil.com").build();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+
+		result = UriComponentsBuilder.fromOriginHeader("https://user@example.com@evil.com").build();
+		assertThat(result.getHost()).isEqualTo("evil.com");
+	}
+
+	@Test
+	void fromOriginHeaderUnterminatedIPv6Host() {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> UriComponentsBuilder.fromOriginHeader("http://[::1"))
+				.withMessage("Invalid IPV6 host in [http://[::1]");
 	}
 
 	@Test

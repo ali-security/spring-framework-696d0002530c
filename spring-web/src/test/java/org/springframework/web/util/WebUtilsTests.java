@@ -155,6 +155,16 @@ public class WebUtilsTests {
 				"http://[2001:0db8:0000:85a3:0000:0000:ac1f:8001]:8080")).isFalse();
 	}
 
+	@Test
+	void isSameOriginWithUserInfoInOrigin() {
+		assertThat(checkSameOrigin("https", "mydomain1.example", 443,
+				"https://mydomain1.example[@mydomain2.example")).isFalse();
+		assertThat(checkSameOrigin("https", "mydomain1.example", 443,
+				"https://user@mydomain1.example[@mydomain2.example")).isFalse();
+		assertThat(checkSameOrigin("https", "mydomain2.example", 443,
+				"https://mydomain1.example[@mydomain2.example")).isTrue();
+	}
+
 	@Test  // SPR-16262
 	void isSameOriginWithXForwardedHeaders() throws Exception {
 		String server = "mydomain1.example";

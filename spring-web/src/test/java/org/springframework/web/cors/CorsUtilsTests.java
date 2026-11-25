@@ -39,6 +39,13 @@ public class CorsUtilsTests {
 	}
 
 	@Test
+	public void isCorsRequestWithUserInfoInOrigin() {
+		MockHttpServletRequest request = new MockHttpServletRequest();
+		request.addHeader(HttpHeaders.ORIGIN, "http://localhost[@domain.com");
+		assertThat(CorsUtils.isCorsRequest(request)).isTrue();
+	}
+
+	@Test
 	public void isNotCorsRequest() {
 		MockHttpServletRequest request = new MockHttpServletRequest();
 		assertThat(CorsUtils.isCorsRequest(request)).isFalse();
