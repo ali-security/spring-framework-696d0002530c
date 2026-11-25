@@ -58,6 +58,47 @@ public class ByteArrayHttpMessageConverterTests {
 	}
 
 	@Test
+	public void readWithContentLengthHeaderSet() throws IOException {
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(body.length);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
+	@Test
+	public void readWithHugeContentLengthHeaderAndSmallBody() throws IOException {
+		// The buffer must not be pre-sized from an untrusted Content-Length header
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(Integer.MAX_VALUE - 1);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
+	@Test
+	public void readWithContentLengthHeaderBeyondIntRange() throws IOException {
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(3_000_000_000L);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(body);
+	}
+
+	@Test
+	public void readWithBodyLongerThanContentLengthHeader() throws IOException {
+		byte[] body = new byte[]{0x1, 0x2, 0x3, 0x4, 0x5};
+		MockHttpInputMessage inputMessage = new MockHttpInputMessage(body);
+		inputMessage.getHeaders().setContentType(new MediaType("application", "octet-stream"));
+		inputMessage.getHeaders().setContentLength(3);
+		byte[] result = converter.read(byte[].class, inputMessage);
+		assertThat(result).as("Invalid result").isEqualTo(new byte[]{0x1, 0x2, 0x3});
+	}
+
+	@Test
 	public void write() throws IOException {
 		MockHttpOutputMessage outputMessage = new MockHttpOutputMessage();
 		byte[] body = new byte[]{0x1, 0x2};
