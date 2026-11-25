@@ -23,12 +23,18 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import io.netty.buffer.PooledByteBufAllocator;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -44,9 +50,11 @@ import org.springframework.core.codec.DecodingException;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.core.io.buffer.NettyDataBuffer;
 import org.springframework.core.io.buffer.NettyDataBufferFactory;
+import org.springframework.core.io.buffer.PooledDataBuffer;
 import org.springframework.http.MediaType;
 import org.springframework.lang.Nullable;
 import org.springframework.web.testfixture.http.server.reactive.MockServerHttpRequest;
@@ -61,9 +69,11 @@ import static org.springframework.core.ResolvableType.forClass;
 import static org.springframework.core.io.buffer.DataBufferUtils.release;
 
 /**
+ * Tests for {@link DefaultPartHttpMessageReader}.
+ *
  * @author Arjen Poutsma
  */
-class DefaultPartHttpMessageReaderTests  {
+class DefaultPartHttpMessageReaderTests {
 
 	private static final String LOREM_IPSUM = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integer iaculis metus id vestibulum nullam.";
 
@@ -71,7 +81,18 @@ class DefaultPartHttpMessageReaderTests  {
 
 	private static final int BUFFER_SIZE = 64;
 
-	private static final DataBufferFactory bufferFactory = new NettyDataBufferFactory(new PooledByteBufAllocator());
+	private final LeakCheckingDataBufferFactory bufferFactory = new LeakCheckingDataBufferFactory();
+
+
+	/**
+	 * Checks that all buffers handed out by {@link #bufferFactory} have been released,
+	 * throwing an {@link AssertionError} if not.
+	 */
+	@AfterEach
+	void checkForLeaks() {
+		this.bufferFactory.checkForLeaks(Duration.ofSeconds(1));
+	}
+
 
 	@ParameterizedDefaultPartHttpMessageReaderTest
 	void canRead(DefaultPartHttpMessageReader reader) {
@@ -162,7 +183,7 @@ class DefaultPartHttpMessageReaderTests  {
 				new ClassPathResource("simple.multipart", getClass()), "simple-boundary");
 		Flux<Part> result = reader.read(forClass(Part.class), request, emptyMap());
 
-		StepVerifier.create(result, 1)
+		StepVerifier.create(result)
 				.consumeNextWith(part -> part.content().subscribe(DataBufferUtils::release))
 				.thenCancel()
 				.verify();
@@ -218,7 +239,7 @@ class DefaultPartHttpMessageReaderTests  {
 	@Test
 	void tooManyParts() throws InterruptedException {
 		MockServerHttpRequest request = createRequest(
-				new ClassPathResource("simple.multipart", getClass()), "simple-boundary");
+				new ClassPathResource("files.multipart", getClass()), "----WebKitFormBoundaryG8fJ50opQOML0oGD");
 
 		DefaultPartHttpMessageReader reader = new DefaultPartHttpMessageReader();
 		reader.setMaxParts(1);
@@ -227,8 +248,7 @@ class DefaultPartHttpMessageReaderTests  {
 
 		CountDownLatch latch = new CountDownLatch(1);
 		StepVerifier.create(result)
-				.consumeNextWith(part -> testPart(part, null,
-						"This is implicitly typed plain ASCII text.\r\nIt does NOT end with a linebreak.", latch)).as("Part 1")
+				.consumeNextWith(part -> testBrowserFile(part, "file2", "a.txt", LOREM_IPSUM, latch)).as("Part 1")
 				.expectError(DecodingException.class)
 				.verify();
 
@@ -273,7 +293,7 @@ class DefaultPartHttpMessageReaderTests  {
 
 	// gh-27612
 	@Test
-	void exceedHeaderLimit() throws InterruptedException {
+	void largeBufferForHeaderDoesNotExceedLimit() throws InterruptedException {
 		Flux<DataBuffer> body = DataBufferUtils
 				.readByteChannel((new ClassPathResource("files.multipart", getClass()))::readableChannel, bufferFactory, 282);
 
@@ -295,6 +315,20 @@ class DefaultPartHttpMessageReaderTests  {
 				.verifyComplete();
 
 		latch.await();
+	}
+
+	@Test
+	void exceedHeaderLimit() {
+		MockServerHttpRequest request = createRequest(
+				new ClassPathResource("files.multipart", getClass()), "\"----WebKitFormBoundaryG8fJ50opQOML0oGD\"");
+
+		DefaultPartHttpMessageReader reader = new DefaultPartHttpMessageReader();
+		reader.setMaxHeadersSize(80);
+		Flux<Part> result = reader.read(forClass(Part.class), request, emptyMap());
+
+		StepVerifier.create(result)
+				.expectError(DataBufferLimitException.class)
+				.verify();
 	}
 
 	private void testBrowser(DefaultPartHttpMessageReader reader, Resource resource, String boundary)
@@ -388,6 +422,66 @@ class DefaultPartHttpMessageReaderTests  {
 		}
 		catch (IOException ex) {
 			throw new AssertionError(ex);
+		}
+	}
+
+
+	/**
+	 * {@link NettyDataBufferFactory} that keeps track of the buffers it allocated, so that
+	 * tests can verify that all of them have been released.
+	 * <p>Contrary to {@code LeakAwareDataBufferFactory} this factory does not wrap the
+	 * buffers it hands out: {@link MultipartParser} joins the header buffers of a part
+	 * through {@link NettyDataBufferFactory#join(List)}, which only accepts
+	 * {@link NettyDataBuffer} instances. Slices retain their parent buffer, so a slice
+	 * that is not released keeps the allocated buffer it originates from allocated.
+	 */
+	private static final class LeakCheckingDataBufferFactory extends NettyDataBufferFactory {
+
+		private final List<NettyDataBuffer> created = new CopyOnWriteArrayList<>();
+
+		LeakCheckingDataBufferFactory() {
+			super(new PooledByteBufAllocator());
+		}
+
+		@Override
+		public NettyDataBuffer allocateBuffer() {
+			return track(super.allocateBuffer());
+		}
+
+		@Override
+		public NettyDataBuffer allocateBuffer(int initialCapacity) {
+			return track(super.allocateBuffer(initialCapacity));
+		}
+
+		private NettyDataBuffer track(NettyDataBuffer buffer) {
+			this.created.add(buffer);
+			return buffer;
+		}
+
+		/**
+		 * Wait up to the given timeout for all allocated buffers to be released, and
+		 * throw an {@link AssertionError} for those that are still allocated.
+		 */
+		void checkForLeaks(Duration timeout) {
+			Instant start = Instant.now();
+			while (true) {
+				List<NettyDataBuffer> leaks = this.created.stream()
+						.filter(PooledDataBuffer::isAllocated)
+						.collect(Collectors.toList());
+				if (leaks.isEmpty()) {
+					return;
+				}
+				if (Instant.now().isBefore(start.plus(timeout))) {
+					try {
+						Thread.sleep(50);
+					}
+					catch (InterruptedException ex) {
+						Thread.currentThread().interrupt();
+					}
+					continue;
+				}
+				throw new AssertionError(leaks.size() + " buffer leak(s) detected: " + leaks);
+			}
 		}
 	}
 
