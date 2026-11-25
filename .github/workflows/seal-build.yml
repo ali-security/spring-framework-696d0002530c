@@ -1,0 +1,110 @@
+name: "Seal Build"
+
+# Spring Framework 5.3.x builds on Concourse (ci/scripts/build-project.sh runs
+# `./gradlew --max-workers=4 build`); this workflow runs the same Gradle build
+# on GitHub Actions, split by module group so each leg fits the job budget, and
+# uploads the spring-web jar.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Gradle test selector (e.g. ':spring-web:test --tests FooTests'); empty runs the full suite"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build (${{ matrix.leg.name }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        leg:
+          - name: spring-web
+            artifact: true
+            tasks: ":spring-web:jar :spring-web:check"
+          - name: core
+            artifact: false
+            tasks: ":spring-jcl:check :spring-core:check :spring-instrument:check"
+          - name: beans-context
+            artifact: false
+            tasks: ":spring-beans:check :spring-aop:check :spring-expression:check :spring-context:check :spring-context-indexer:check :spring-context-support:check :spring-aspects:check"
+          - name: data
+            artifact: false
+            tasks: ":spring-tx:check :spring-jdbc:check :spring-orm:check :spring-oxm:check :spring-r2dbc:check :spring-jms:check"
+          - name: messaging-websocket
+            artifact: false
+            tasks: ":spring-messaging:check :spring-websocket:check"
+          - name: webflux
+            artifact: false
+            tasks: ":spring-webflux:check"
+          - name: webmvc
+            artifact: false
+            tasks: ":spring-webmvc:check"
+          - name: test-integration
+            artifact: false
+            tasks: ":spring-test:check :integration-tests:check :framework-bom:check"
+    env:
+      GRADLE_FLAGS: "--no-daemon --max-workers=4 --console=plain --no-scan --no-build-cache --stacktrace --continue"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+          cache: gradle
+
+      - name: Configure Gradle (test reporting, no lint gates)
+        shell: bash
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/seal.gradle <<'GRADLE'
+          allprojects {
+              // Checkstyle (incl. checkstyleNohttp) is a style gate, not a test.
+              tasks.withType(org.gradle.api.plugins.quality.Checkstyle).configureEach { enabled = false }
+              tasks.withType(Test).configureEach { t ->
+                  t.outputs.upToDateWhen { false }
+                  t.testLogging {
+                      events "failed"
+                      exceptionFormat "full"
+                      showStackTraces true
+                  }
+                  t.afterSuite { desc, result ->
+                      if (desc.parent == null) {
+                          println "TEST SUMMARY ${t.path}: tests=${result.testCount} passed=${result.successfulTestCount} failed=${result.failedTestCount} skipped=${result.skippedTestCount} result=${result.resultType}"
+                      }
+                  }
+              }
+          }
+          GRADLE
+          echo "PROJECT_VERSION=$(sed -n 's/^version=//p' gradle.properties)" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: ${{ inputs.test-filter == '' || matrix.leg.artifact }}
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            ./gradlew $GRADLE_FLAGS :spring-web:jar ${{ inputs.test-filter }}
+          else
+            ./gradlew $GRADLE_FLAGS ${{ matrix.leg.tasks }}
+          fi
+
+      - name: Test report
+        if: ${{ !cancelled() && (inputs.test-filter == '' || matrix.leg.artifact) }}
+        shell: bash
+        run: python3 .github/scripts/seal_test_report.py "${{ matrix.leg.name }}"
+
+      - name: Upload spring-web jar
+        if: ${{ matrix.leg.artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-web-jar
+          path: spring-web/build/libs/spring-web-${{ env.PROJECT_VERSION }}.jar
+          if-no-files-found: error
